@@ -1,9 +1,12 @@
 const http = require('http');
 const puppeteer = require('puppeteer');
+require("dotenv").config();
 const { MongoClient } = require('mongodb');
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const path = require('path');
+const { execPath } = require('process');
+
 
 
 const server = http.createServer((req, res) => {
@@ -143,64 +146,79 @@ async function retrieveDataAndScrape() {
         const links = products.map(product => product.link);
 
         // Launch the browser
-        const browser = await puppeteer.launch();
+        const browser = await puppeteer.launch({
+            args: [
+              "--disable-setuid-sandbox",
+              "--no-sandbox",
+              "--single-process",
+              "--no-zygote",
+            ],
+            executablePath:
+              process.env.NODE_ENV === "production"
+                ? process.env.PUPPETEER_EXECUTABLE_PATH
+                : puppeteer.executablePath(),
+          });
 
-        let c = 0;
-        // Iterate through each link
-        for (const link of links) {
-            c++;
-            const page = await browser.newPage();
-            console.log(`Scraping ${c}/${links.length} `);
+        try { 
+            let c = 0;
+            // Iterate through each link
+            for (const link of links) {
+                c++;
+                const page = await browser.newPage();
+                console.log(`Scraping ${c}/${links.length} `);
 
-            const { title, price } = await scrapeAmazonProductPage(link, page);
+                const { title, price } = await scrapeAmazonProductPage(link, page);
 
-            // Check if the title exists in price_data collection
-            const existingProduct = await priceDataCollection.findOne({ title });
+                // Check if the title exists in price_data collection
+                const existingProduct = await priceDataCollection.findOne({ title });
 
-            if (existingProduct) {
-                console.log(`Title already exists in price_data collection`);
+                if (existingProduct) {
+                    console.log(`Title already exists in price_data collection`);
 
-                // Compare prices
-                const existingPrice = existingProduct.price;
-                const existingPriceNumeric = parseFloat(existingPrice.replace(',', ''));
-                const priceNumeric = parseFloat(price.replace(',', ''));
-                if (existingPriceNumeric === priceNumeric) {
-                    console.log(`Price for "${c}" is unchanged`);
-                } else if (existingPriceNumeric > priceNumeric) {
-                    console.log(`Price for "${c}" has decreased from ${existingPrice} to ${price}`);
+                    // Compare prices
+                    const existingPrice = existingProduct.price;
+                    const existingPriceNumeric = parseFloat(existingPrice.replace(',', ''));
+                    const priceNumeric = parseFloat(price.replace(',', ''));
+                    if (existingPriceNumeric === priceNumeric) {
+                        console.log(`Price for "${c}" is unchanged`);
+                    } else if (existingPriceNumeric > priceNumeric) {
+                        console.log(`Price for "${c}" has decreased from ${existingPrice} to ${price}`);
 
-                    const msg = `"${title}"\n\nPrice drop from ${existingPrice} to ${price}\n\n${link}`;
-                    sendMessageToChannel(msg);
+                        const msg = `"${title}"\n\nPrice drop from ${existingPrice} to ${price}\n\n${link}`;
+                        sendMessageToChannel(msg);
 
 
-                    //await sendMessageWithImage(page, msg, link, title);
-                    // Update the price in the collection
-                    await priceDataCollection.updateOne(
-                        { title },
-                        { $set: { price } }
-                    );
-                    console.log(`Price updated for "${c}"`);
-                } else if (existingPriceNumeric < priceNumeric){
-                    console.log(`Price for "${c}" has increased from ${existingPrice} to ${price}`);
-                    // Update the price in the collection
-                    await priceDataCollection.updateOne(
-                        { title },
-                        { $set: { price } }
-                    );
-                    console.log(`Price updated for "${c}"`);
+                        //await sendMessageWithImage(page, msg, link, title);
+                        // Update the price in the collection
+                        await priceDataCollection.updateOne(
+                            { title },
+                            { $set: { price } }
+                        );
+                        console.log(`Price updated for "${c}"`);
+                    } else if (existingPriceNumeric < priceNumeric){
+                        console.log(`Price for "${c}" has increased from ${existingPrice} to ${price}`);
+                        // Update the price in the collection
+                        await priceDataCollection.updateOne(
+                            { title },
+                            { $set: { price } }
+                        );
+                        console.log(`Price updated for "${c}"`);
+                    }
+                } else {
+                    console.log(`Title "${c}" does not exist in price_data collection, inserting...`);
+                    await priceDataCollection.insertOne({ title, price, link });
+
                 }
-            } else {
-                console.log(`Title "${c}" does not exist in price_data collection, inserting...`);
-                await priceDataCollection.insertOne({ title, price, link });
-
-            }
-
+        }
+        
             // Close the page after scraping
             await page.close();
         }
+        catch{
+            // Close the browser after scraping all links
+            await browser.close();
 
-        // Close the browser after scraping all links
-        await browser.close();
+        }
 
     } catch (error) {
         console.error('Error:', error);
@@ -231,5 +249,3 @@ a()
 //     }
     
 // }
-
-
